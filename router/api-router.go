@@ -268,6 +268,7 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.POST("/upstream_updates/detect_all", controller.DetectAllChannelUpstreamModelUpdates)
 		}
 		botcordRoute := apiRouter.Group("/botcord")
+		botcordRoute.Use(middleware.CriticalRateLimit())
 		{
 			botcordRoute.POST("/provision", controller.BotcordProvision)
 			botcordRoute.POST("/balance", controller.BotcordBalance)

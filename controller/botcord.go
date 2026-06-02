@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const botcordTokenName = "BotCord Cloud Agent"
@@ -155,7 +156,9 @@ func botcordEnsureUserAndToken(req botcordUserRequest) (*model.User, *model.Toke
 	var token model.Token
 
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
-		err := tx.Where("username = ?", username).First(&user).Error
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("username = ?", username).
+			First(&user).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			password, keyErr := common.GenerateRandomKey(20)
 			if keyErr != nil {
@@ -224,8 +227,8 @@ func botcordBuildBalance(externalUserId string, user *model.User, token *model.T
 		Quota:          user.Quota,
 		UsedQuota:      user.UsedQuota,
 		QuotaPerUsd:    common.QuotaPerUnit,
-		BalanceUsd:     float64(user.Quota) / common.QuotaPerUnit,
-		UsedUsd:        float64(user.UsedQuota) / common.QuotaPerUnit,
+		BalanceUsd:     float64(token.RemainQuota) / common.QuotaPerUnit,
+		UsedUsd:        float64(token.UsedQuota) / common.QuotaPerUnit,
 		Token: botcordTokenView{
 			Id:             token.Id,
 			Name:           token.Name,
