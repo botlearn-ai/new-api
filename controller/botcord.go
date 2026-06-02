@@ -292,11 +292,15 @@ func BotcordTopUp(c *gin.Context) {
 		return
 	}
 
-	user, token, _, err := botcordEnsureUserAndToken(botcordUserRequest{
-		ExternalUserId: req.ExternalUserId,
-		InitialQuota:   0,
-	})
+	user, token, err := botcordFindUserAndToken(req.ExternalUserId)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"message": "botcord user or token not found",
+			})
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
