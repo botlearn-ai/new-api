@@ -146,6 +146,8 @@ func initConstantEnv() {
 	constant.NotificationLimitDurationMinute = GetEnvOrDefault("NOTIFICATION_LIMIT_DURATION_MINUTE", 10)
 	// GenerateDefaultToken 是否生成初始令牌，默认关闭。
 	constant.GenerateDefaultToken = GetEnvOrDefaultBool("GENERATE_DEFAULT_TOKEN", false)
+	// TOKEN_LIMIT_EXEMPT_USER_IDS 用于服务账号等需要批量签发令牌的场景，逗号分隔。
+	constant.TokenLimitExemptUserIds = parseIntSetEnv("TOKEN_LIMIT_EXEMPT_USER_IDS")
 	// 是否启用错误日志
 	constant.ErrorLogEnabled = GetEnvOrDefaultBool("ERROR_LOG_ENABLED", false)
 	// 任务轮询时查询的最大数量
@@ -178,4 +180,25 @@ func initConstantEnv() {
 		}
 	}
 	constant.TrustedRedirectDomains = trustedDomains
+}
+
+func parseIntSetEnv(env string) map[int]bool {
+	values := map[int]bool{}
+	raw := GetEnvOrDefaultString(env, "")
+	if raw == "" {
+		return values
+	}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		value, err := strconv.Atoi(part)
+		if err != nil || value <= 0 {
+			log.Printf("WARNING: ignoring invalid %s entry %q", env, part)
+			continue
+		}
+		values[value] = true
+	}
+	return values
 }

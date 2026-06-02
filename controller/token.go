@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -165,6 +166,7 @@ func GetTokenUsage(c *gin.Context) {
 }
 
 func AddToken(c *gin.Context) {
+	userId := c.GetInt("id")
 	token := model.Token{}
 	err := c.ShouldBindJSON(&token)
 	if err != nil {
@@ -188,18 +190,20 @@ func AddToken(c *gin.Context) {
 		}
 	}
 	// 检查用户令牌数量是否已达上限
-	maxTokens := operation_setting.GetMaxUserTokens()
-	count, err := model.CountUserTokens(c.GetInt("id"))
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	if int(count) >= maxTokens {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("已达到最大令牌数量限制 (%d)", maxTokens),
-		})
-		return
+	if !constant.IsTokenLimitExemptUser(userId) {
+		maxTokens := operation_setting.GetMaxUserTokens()
+		count, err := model.CountUserTokens(userId)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if int(count) >= maxTokens {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("已达到最大令牌数量限制 (%d)", maxTokens),
+			})
+			return
+		}
 	}
 	key, err := common.GenerateKey()
 	if err != nil {
@@ -208,7 +212,7 @@ func AddToken(c *gin.Context) {
 		return
 	}
 	cleanToken := model.Token{
-		UserId:             c.GetInt("id"),
+		UserId:             userId,
 		Name:               token.Name,
 		Key:                key,
 		CreatedTime:        common.GetTimestamp(),
@@ -227,9 +231,18 @@ func AddToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
+	common.ApiSuccess(c, gin.H{
+		"id":                   cleanToken.Id,
+		"name":                 cleanToken.Name,
+		"key":                  cleanToken.GetFullKey(),
+		"api_key":              "sk-" + cleanToken.GetFullKey(),
+		"expired_time":         cleanToken.ExpiredTime,
+		"remain_quota":         cleanToken.RemainQuota,
+		"unlimited_quota":      cleanToken.UnlimitedQuota,
+		"model_limits_enabled": cleanToken.ModelLimitsEnabled,
+		"model_limits":         cleanToken.ModelLimits,
+		"group":                cleanToken.Group,
+		"cross_group_retry":    cleanToken.CrossGroupRetry,
 	})
 }
 

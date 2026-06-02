@@ -13,7 +13,9 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"gorm.io/driver/mysql"
@@ -42,27 +44,41 @@ type tokenKeyResponse struct {
 	Key string `json:"key"`
 }
 
+type tokenCreateResponse struct {
+	ID                 int    `json:"id"`
+	Name               string `json:"name"`
+	Key                string `json:"key"`
+	APIKey             string `json:"api_key"`
+	ExpiredTime        int64  `json:"expired_time"`
+	RemainQuota        int    `json:"remain_quota"`
+	UnlimitedQuota     bool   `json:"unlimited_quota"`
+	ModelLimitsEnabled bool   `json:"model_limits_enabled"`
+	ModelLimits        string `json:"model_limits"`
+	Group              string `json:"group"`
+	CrossGroupRetry    bool   `json:"cross_group_retry"`
+}
+
 type sqliteColumnInfo struct {
 	Name string `gorm:"column:name"`
 	Type string `gorm:"column:type"`
 }
 
 type legacyToken struct {
-	Id                 int            `gorm:"primaryKey"`
-	UserId             int            `gorm:"index"`
-	Key                string         `gorm:"column:key;type:char(48);uniqueIndex"`
-	Status             int            `gorm:"default:1"`
-	Name               string         `gorm:"index"`
-	CreatedTime        int64          `gorm:"bigint"`
-	AccessedTime       int64          `gorm:"bigint"`
-	ExpiredTime        int64          `gorm:"bigint;default:-1"`
-	RemainQuota        int            `gorm:"default:0"`
+	Id                 int    `gorm:"primaryKey"`
+	UserId             int    `gorm:"index"`
+	Key                string `gorm:"column:key;type:char(48);uniqueIndex"`
+	Status             int    `gorm:"default:1"`
+	Name               string `gorm:"index"`
+	CreatedTime        int64  `gorm:"bigint"`
+	AccessedTime       int64  `gorm:"bigint"`
+	ExpiredTime        int64  `gorm:"bigint;default:-1"`
+	RemainQuota        int    `gorm:"default:0"`
 	UnlimitedQuota     bool
 	ModelLimitsEnabled bool
-	ModelLimits        string         `gorm:"type:text"`
-	AllowIps           *string        `gorm:"default:''"`
-	UsedQuota          int            `gorm:"default:0"`
-	Group              string         `gorm:"column:group;default:''"`
+	ModelLimits        string  `gorm:"type:text"`
+	AllowIps           *string `gorm:"default:''"`
+	UsedQuota          int     `gorm:"default:0"`
+	Group              string  `gorm:"column:group;default:''"`
 	CrossGroupRetry    bool
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
 }
@@ -388,6 +404,125 @@ func TestTokenMigrationFromChar48ToVarchar128Postgres(t *testing.T) {
 
 	db, managedTokensTable := openTokenControllerExternalDB(t, "postgres", dsn)
 	runTokenMigrationCompatibilityTest(t, db, "postgres", managedTokensTable)
+}
+
+func TestAddTokenReturnsFullKey(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+
+	body := map[string]any{
+		"name":                 "created-token",
+		"expired_time":         -1,
+		"remain_quota":         500000,
+		"unlimited_quota":      false,
+		"model_limits_enabled": false,
+		"model_limits":         "",
+		"group":                "default",
+		"cross_group_retry":    false,
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, 1)
+	AddToken(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	if !response.Success {
+		t.Fatalf("expected token creation to succeed, got message: %s", response.Message)
+	}
+
+	var created tokenCreateResponse
+	if err := common.Unmarshal(response.Data, &created); err != nil {
+		t.Fatalf("failed to decode token create response: %v", err)
+	}
+	if created.ID == 0 {
+		t.Fatalf("expected created token id to be returned")
+	}
+	if created.Key == "" {
+		t.Fatalf("expected raw token key to be returned")
+	}
+	if created.APIKey != "sk-"+created.Key {
+		t.Fatalf("expected api_key %q, got %q", "sk-"+created.Key, created.APIKey)
+	}
+	if created.Name != "created-token" {
+		t.Fatalf("expected created token name to be returned, got %q", created.Name)
+	}
+	if created.RemainQuota != 500000 {
+		t.Fatalf("expected created token quota 500000, got %d", created.RemainQuota)
+	}
+
+	var saved model.Token
+	if err := db.First(&saved, created.ID).Error; err != nil {
+		t.Fatalf("failed to load created token: %v", err)
+	}
+	if saved.Key != created.Key {
+		t.Fatalf("expected saved token key %q, got %q", created.Key, saved.Key)
+	}
+}
+
+func TestAddTokenHonorsTokenLimitForRegularUsers(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	seedToken(t, db, 1, "existing-token", "limit1234token5678")
+
+	oldMaxTokens := operation_setting.GetTokenSetting().MaxUserTokens
+	operation_setting.GetTokenSetting().MaxUserTokens = 1
+	t.Cleanup(func() {
+		operation_setting.GetTokenSetting().MaxUserTokens = oldMaxTokens
+	})
+
+	body := map[string]any{
+		"name":                 "blocked-token",
+		"expired_time":         -1,
+		"remain_quota":         100,
+		"unlimited_quota":      false,
+		"model_limits_enabled": false,
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, 1)
+	AddToken(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	if response.Success {
+		t.Fatalf("expected token creation to fail for user at token limit")
+	}
+	if !strings.Contains(response.Message, "已达到最大令牌数量限制") {
+		t.Fatalf("expected token limit error, got %q", response.Message)
+	}
+}
+
+func TestAddTokenSkipsTokenLimitForExemptUsers(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	seedToken(t, db, 1, "existing-token", "exempt1234token5678")
+
+	oldMaxTokens := operation_setting.GetTokenSetting().MaxUserTokens
+	operation_setting.GetTokenSetting().MaxUserTokens = 1
+	oldExemptUsers := constant.TokenLimitExemptUserIds
+	constant.TokenLimitExemptUserIds = map[int]bool{1: true}
+	t.Cleanup(func() {
+		operation_setting.GetTokenSetting().MaxUserTokens = oldMaxTokens
+		constant.TokenLimitExemptUserIds = oldExemptUsers
+	})
+
+	body := map[string]any{
+		"name":                 "service-token",
+		"expired_time":         -1,
+		"remain_quota":         100,
+		"unlimited_quota":      false,
+		"model_limits_enabled": false,
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, 1)
+	AddToken(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	if !response.Success {
+		t.Fatalf("expected token creation to succeed for exempt user, got message: %s", response.Message)
+	}
+
+	var created tokenCreateResponse
+	if err := common.Unmarshal(response.Data, &created); err != nil {
+		t.Fatalf("failed to decode token create response: %v", err)
+	}
+	if created.Key == "" || created.APIKey != "sk-"+created.Key {
+		t.Fatalf("expected created token key and api_key to be returned, got %+v", created)
+	}
 }
 
 func TestGetAllTokensMasksKeyInResponse(t *testing.T) {
