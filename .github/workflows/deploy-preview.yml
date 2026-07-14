@@ -24,8 +24,8 @@ jobs:
 
       - name: Build docker image
         run: |
-          docker build -t $PROJECT:test .
-          echo "✅ Built $PROJECT:test"
+          docker build -t $PROJECT:preview .
+          echo "✅ Built $PROJECT:preview"
 
       - name: Ensure ECR repository exists
         run: |
@@ -35,9 +35,9 @@ jobs:
       - name: Push to ECR
         run: |
           aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin $ECR_REGISTRY
-          docker tag $PROJECT:preview $ECR_REGISTRY/botlearn/$PROJECT:test
-          docker push $ECR_REGISTRY/botlearn/$PROJECT:test
-          echo "✅ Pushed $ECR_REGISTRY/botlearn/$PROJECT:test"
+          docker tag $PROJECT:preview $ECR_REGISTRY/botlearn/$PROJECT:preview
+          docker push $ECR_REGISTRY/botlearn/$PROJECT:preview
+          echo "✅ Pushed $ECR_REGISTRY/botlearn/$PROJECT:preview"
 
       - name: Restart preview (docker compose)
         run: |
