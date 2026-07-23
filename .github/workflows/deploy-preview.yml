@@ -41,8 +41,8 @@ jobs:
 
       - name: Build docker image
         run: |
-          docker build -t $PROJECT:preview .
-          echo "✅ Built $PROJECT:preview"
+          docker build -t "$PROJECT:test" .
+          echo "✅ Built $PROJECT:test"
 
       - name: Log in to US ECR
         id: ecr_us_login
@@ -61,9 +61,9 @@ jobs:
       - name: Push to US ECR
         if: env.PUSH_REGION == 'us' || env.PUSH_REGION == 'both'
         run: |
-          docker tag "$PROJECT:preview" "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:preview"
-          docker push "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:preview"
-          echo "✅ Pushed $ECR_US_REGISTRY/$ECR_US_REPOSITORY:preview"
+          docker tag "$PROJECT:test" "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:test"
+          docker push "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:test"
+          echo "✅ Pushed $ECR_US_REGISTRY/$ECR_US_REPOSITORY:test"
 
       - name: Restart preview (docker compose)
         if: env.PUSH_REGION == 'us' || env.PUSH_REGION == 'both'
@@ -102,6 +102,6 @@ jobs:
       - name: Push to CN ECR
         if: ${{ !cancelled() && steps.ecr_cn_login.outcome == 'success' && (env.PUSH_REGION == 'cn' || env.PUSH_REGION == 'both') }}
         run: |
-          docker tag "$PROJECT:preview" "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:preview"
-          docker push "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:preview"
-          echo "✅ Pushed $ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:preview"
+          docker tag "$PROJECT:test" "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:test"
+          docker push "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:test"
+          echo "✅ Pushed $ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:test"
