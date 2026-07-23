@@ -1,0 +1,102 @@
+name: Configure ECR login
+description: Configure one AWS partition, ensure its ECR repository exists, and log Docker in
+
+inputs:
+  label:
+    description: Human-readable partition label
+    required: true
+  registry:
+    description: ECR registry hostname
+    required: true
+  region:
+    description: AWS region
+    required: true
+  repository:
+    description: ECR repository name
+    required: true
+  access-key-id:
+    description: AWS access key ID
+    required: false
+  secret-access-key:
+    description: AWS secret access key
+    required: false
+  session-token:
+    description: Optional AWS session token
+    required: false
+  allow-ambient-credentials:
+    description: Allow the runner's existing AWS credential chain when no keys are provided
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Configure credentials and log in
+      shell: bash
+      env:
+        ECR_LABEL: ${{ inputs.label }}
+        ECR_REGISTRY: ${{ inputs.registry }}
+        ECR_REGION: ${{ inputs.region }}
+        ECR_REPOSITORY: ${{ inputs.repository }}
+        CONFIGURED_AWS_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
+        CONFIGURED_AWS_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
+        CONFIGURED_AWS_SESSION_TOKEN: ${{ inputs.session-token }}
+        ALLOW_AMBIENT_CREDENTIALS: ${{ inputs.allow-ambient-credentials }}
+      run: |
+        if [ -z "$ECR_REGISTRY" ]; then
+          echo "::error::$ECR_LABEL ECR registry is not configured"
+          exit 1
+        fi
+        if [ "$ECR_LABEL" = "CN" ]; then
+          case "$ECR_REGISTRY" in
+            *".dkr.ecr.${ECR_REGION}.amazonaws.com.cn") ;;
+            *)
+              echo "::error::CN ECR registry must end with .dkr.ecr.${ECR_REGION}.amazonaws.com.cn"
+              exit 1
+              ;;
+          esac
+        fi
+
+        if [ -n "$CONFIGURED_AWS_ACCESS_KEY_ID" ] || [ -n "$CONFIGURED_AWS_SECRET_ACCESS_KEY" ]; then
+          if [ -z "$CONFIGURED_AWS_ACCESS_KEY_ID" ] || [ -z "$CONFIGURED_AWS_SECRET_ACCESS_KEY" ]; then
+            echo "::error::$ECR_LABEL access key ID and secret access key must be configured together"
+            exit 1
+          fi
+          export AWS_ACCESS_KEY_ID="$CONFIGURED_AWS_ACCESS_KEY_ID"
+          export AWS_SECRET_ACCESS_KEY="$CONFIGURED_AWS_SECRET_ACCESS_KEY"
+          if [ -n "$CONFIGURED_AWS_SESSION_TOKEN" ]; then
+            export AWS_SESSION_TOKEN="$CONFIGURED_AWS_SESSION_TOKEN"
+          else
+            unset AWS_SESSION_TOKEN
+          fi
+        elif [ "$ALLOW_AMBIENT_CREDENTIALS" != "true" ]; then
+          echo "::error::$ECR_LABEL AWS access key secrets are required"
+          exit 1
+        fi
+
+        if ! describe_output=$(aws ecr describe-repositories \
+          --region "$ECR_REGION" \
+          --repository-names "$ECR_REPOSITORY" 2>&1); then
+          case "$describe_output" in
+            *RepositoryNotFoundException*)
+              if ! create_output=$(aws ecr create-repository \
+                --region "$ECR_REGION" \
+                --repository-name "$ECR_REPOSITORY" 2>&1); then
+                case "$create_output" in
+                  *RepositoryAlreadyExistsException*) ;;
+                  *)
+                    printf '%s\n' "$create_output" >&2
+                    exit 1
+                    ;;
+                esac
+              fi
+              ;;
+            *)
+              printf '%s\n' "$describe_output" >&2
+              exit 1
+              ;;
+          esac
+        fi
+
+        aws ecr get-login-password --region "$ECR_REGION" \
+          | docker login --username AWS --password-stdin "$ECR_REGISTRY"
