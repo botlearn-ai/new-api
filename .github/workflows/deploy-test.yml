@@ -1,7 +1,7 @@
-name: Deploy Preview
+name: Deploy Test
 
-# Build the fork image, push to the selected ECR regions,
-# then restart the existing US docker-compose deployment when US is selected.
+# Build the test image, push to the selected ECR regions,
+# then deploy the existing US test service when US is selected.
 on:
   workflow_dispatch:
     inputs:
@@ -28,12 +28,12 @@ env:
   COMPOSE_FILE: /www/devops/deployments/test/botcord-new-api/docker-compose.yaml
 
 concurrency:
-  group: deploy-preview
+  group: deploy-test
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Build & Push & Restart
+    name: Build & Push & Deploy Test
     runs-on: self-hosted
     timeout-minutes: 30
     steps:
@@ -65,25 +65,42 @@ jobs:
           docker push "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:test"
           echo "✅ Pushed $ECR_US_REGISTRY/$ECR_US_REPOSITORY:test"
 
-      - name: Restart preview (docker compose)
+      - name: Verify GitOps test configuration
         if: env.PUSH_REGION == 'us' || env.PUSH_REGION == 'both'
         run: |
-          docker compose -f $COMPOSE_FILE pull
-          docker compose -f $COMPOSE_FILE up -d
-          echo "✅ Preview restarted"
+          expected_image="$ECR_US_REGISTRY/$ECR_US_REPOSITORY:test"
+          compose_images="$(docker compose -f "$COMPOSE_FILE" config --images)"
+
+          if ! grep -Fxq "$expected_image" <<< "$compose_images"; then
+            echo "::error::GitOps config is not synchronized to $expected_image"
+            printf '%s\n' "$compose_images"
+            exit 1
+          fi
+
+          if ! git -C /www/devops diff --quiet -- deployments/test/botcord-new-api/docker-compose.yaml; then
+            echo "::error::GitOps test configuration has server-local changes"
+            exit 1
+          fi
+
+      - name: Deploy test (docker compose)
+        if: env.PUSH_REGION == 'us' || env.PUSH_REGION == 'both'
+        run: |
+          docker compose -f "$COMPOSE_FILE" pull botcord-new-api
+          docker compose -f "$COMPOSE_FILE" up -d botcord-new-api
+          echo "✅ Test deployment restarted"
 
       - name: Health check
         if: env.PUSH_REGION == 'us' || env.PUSH_REGION == 'both'
         run: |
           for i in $(seq 1 20); do
-            if curl -fsS http://localhost:8042/api/status | grep -q '"success":\s*true'; then
+            if curl -fsS http://localhost:8042/api/status | grep -Eq '"success"[[:space:]]*:[[:space:]]*true'; then
               echo "✅ Service healthy"
               exit 0
             fi
             sleep 3
           done
           echo "❌ Health check failed"
-          docker compose -f $COMPOSE_FILE logs --tail=50 botcord-new-api
+          docker compose -f "$COMPOSE_FILE" logs --tail=50 botcord-new-api
           exit 1
 
       - name: Log in to CN ECR
