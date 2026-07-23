@@ -23,10 +23,10 @@ env:
   PUSH_REGION: ${{ inputs.region || 'both' }}
   ECR_US_REGISTRY: ${{ vars.AWS_US_ECR_REGISTRY || '928112001319.dkr.ecr.us-east-1.amazonaws.com' }}
   ECR_US_REGION: ${{ vars.AWS_US_REGION || 'us-east-1' }}
-  ECR_US_REPOSITORY: ${{ vars.AWS_US_ECR_REPOSITORY || 'botlearn-ai/new-api' }}
+  ECR_US_REPOSITORY: ${{ vars.AWS_US_ECR_REPOSITORY || 'botlearn/new-api' }}
   ECR_CN_REGISTRY: ${{ vars.AWS_CN_ECR_REGISTRY }}
   ECR_CN_REGION: ${{ vars.AWS_CN_REGION || 'cn-northwest-1' }}
-  ECR_CN_REPOSITORY: ${{ vars.AWS_CN_ECR_REPOSITORY || 'botlearn-ai/new-api' }}
+  ECR_CN_REPOSITORY: ${{ vars.AWS_CN_ECR_REPOSITORY || 'botlearn/new-api' }}
 
 jobs:
   build_single_arch:
