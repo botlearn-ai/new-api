@@ -1,0 +1,124 @@
+name: Deploy Test
+
+# Build the test image, push to the selected ECR regions,
+# then deploy the existing US test service when US is selected.
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: ECR region(s) to publish
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - us
+          - cn
+
+env:
+  PUSH_REGION: ${{ inputs.region || 'both' }}
+  ECR_REGISTRY: ${{ vars.AWS_US_ECR_REGISTRY || '928112001319.dkr.ecr.us-east-1.amazonaws.com' }}
+  ECR_US_REGISTRY: ${{ vars.AWS_US_ECR_REGISTRY || '928112001319.dkr.ecr.us-east-1.amazonaws.com' }}
+  ECR_US_REGION: ${{ vars.AWS_US_REGION || 'us-east-1' }}
+  ECR_US_REPOSITORY: ${{ vars.AWS_US_ECR_REPOSITORY || 'botlearn/new-api' }}
+  ECR_CN_REGISTRY: ${{ vars.AWS_CN_ECR_REGISTRY }}
+  ECR_CN_REGION: ${{ vars.AWS_CN_REGION || 'cn-northwest-1' }}
+  ECR_CN_REPOSITORY: ${{ vars.AWS_CN_ECR_REPOSITORY || 'botlearn/new-api' }}
+  PROJECT: new-api
+  COMPOSE_FILE: /www/devops/deployments/test/botcord-new-api/docker-compose.yaml
+
+concurrency:
+  group: deploy-test
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build & Push & Deploy Test
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build docker image
+        run: |
+          docker build -t "$PROJECT:test" .
+          echo "✅ Built $PROJECT:test"
+
+      - name: Log in to US ECR
+        id: ecr_us_login
+        if: env.PUSH_REGION == 'us' || env.PUSH_REGION == 'both'
+        uses: ./.github/actions/ecr-login
+        with:
+          label: US
+          registry: ${{ env.ECR_US_REGISTRY }}
+          region: ${{ env.ECR_US_REGION }}
+          repository: ${{ env.ECR_US_REPOSITORY }}
+          access-key-id: ${{ secrets.AWS_US_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.AWS_US_SECRET_ACCESS_KEY }}
+          session-token: ${{ secrets.AWS_US_SESSION_TOKEN }}
+          allow-ambient-credentials: "true"
+
+      - name: Push to US ECR
+        if: env.PUSH_REGION == 'us' || env.PUSH_REGION == 'both'
+        run: |
+          docker tag "$PROJECT:test" "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:test"
+          docker push "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:test"
+          echo "✅ Pushed $ECR_US_REGISTRY/$ECR_US_REPOSITORY:test"
+
+      - name: Verify GitOps test configuration
+        if: env.PUSH_REGION == 'us' || env.PUSH_REGION == 'both'
+        run: |
+          expected_image="$ECR_US_REGISTRY/$ECR_US_REPOSITORY:test"
+          compose_images="$(docker compose -f "$COMPOSE_FILE" config --images)"
+
+          if ! grep -Fxq "$expected_image" <<< "$compose_images"; then
+            echo "::error::GitOps config is not synchronized to $expected_image"
+            printf '%s\n' "$compose_images"
+            exit 1
+          fi
+
+          if ! git -C /www/devops diff --quiet -- deployments/test/botcord-new-api/docker-compose.yaml; then
+            echo "::error::GitOps test configuration has server-local changes"
+            exit 1
+          fi
+
+      - name: Deploy test (docker compose)
+        if: env.PUSH_REGION == 'us' || env.PUSH_REGION == 'both'
+        run: |
+          docker compose -f "$COMPOSE_FILE" pull botcord-new-api
+          docker compose -f "$COMPOSE_FILE" up -d botcord-new-api
+          echo "✅ Test deployment restarted"
+
+      - name: Health check
+        if: env.PUSH_REGION == 'us' || env.PUSH_REGION == 'both'
+        run: |
+          for i in $(seq 1 20); do
+            if curl -fsS http://localhost:8042/api/status | grep -Eq '"success"[[:space:]]*:[[:space:]]*true'; then
+              echo "✅ Service healthy"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "❌ Health check failed"
+          docker compose -f "$COMPOSE_FILE" logs --tail=50 botcord-new-api
+          exit 1
+
+      - name: Log in to CN ECR
+        id: ecr_cn_login
+        if: ${{ !cancelled() && (env.PUSH_REGION == 'cn' || env.PUSH_REGION == 'both') }}
+        uses: ./.github/actions/ecr-login
+        with:
+          label: CN
+          registry: ${{ env.ECR_CN_REGISTRY }}
+          region: ${{ env.ECR_CN_REGION }}
+          repository: ${{ env.ECR_CN_REPOSITORY }}
+          access-key-id: ${{ secrets.AWS_CN_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.AWS_CN_SECRET_ACCESS_KEY }}
+          session-token: ${{ secrets.AWS_CN_SESSION_TOKEN }}
+
+      - name: Push to CN ECR
+        if: ${{ !cancelled() && steps.ecr_cn_login.outcome == 'success' && (env.PUSH_REGION == 'cn' || env.PUSH_REGION == 'both') }}
+        run: |
+          docker tag "$PROJECT:test" "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:test"
+          docker push "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:test"
+          echo "✅ Pushed $ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:test"

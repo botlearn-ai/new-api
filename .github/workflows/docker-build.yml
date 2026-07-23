@@ -11,6 +11,24 @@ on:
         description: 'Tag name to build (e.g., v0.10.8-alpha.3)'
         required: true
         type: string
+      region:
+        description: ECR region(s) to publish
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - us
+          - cn
+
+env:
+  PUSH_REGION: ${{ inputs.region || 'both' }}
+  ECR_US_REGISTRY: ${{ vars.AWS_US_ECR_REGISTRY || '928112001319.dkr.ecr.us-east-1.amazonaws.com' }}
+  ECR_US_REGION: ${{ vars.AWS_US_REGION || 'us-east-1' }}
+  ECR_US_REPOSITORY: ${{ vars.AWS_US_ECR_REPOSITORY || 'botlearn/new-api' }}
+  ECR_CN_REGISTRY: ${{ vars.AWS_CN_ECR_REGISTRY }}
+  ECR_CN_REGION: ${{ vars.AWS_CN_REGION || 'cn-northwest-1' }}
+  ECR_CN_REPOSITORY: ${{ vars.AWS_CN_ECR_REPOSITORY || 'botlearn/new-api' }}
 
 jobs:
   build_single_arch:
@@ -139,3 +157,91 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           docker buildx imagetools inspect calciumion/new-api:${TAG} >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+  publish_us_ecr:
+    name: Publish US ECR image
+    needs: [build_single_arch]
+    if: inputs.region != 'cn'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set version
+        run: echo "TAG=${{ needs.build_single_arch.outputs.tag }}" >> "$GITHUB_ENV"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to US ECR
+        uses: ./.github/actions/ecr-login
+        with:
+          label: US
+          registry: ${{ env.ECR_US_REGISTRY }}
+          region: ${{ env.ECR_US_REGION }}
+          repository: ${{ env.ECR_US_REPOSITORY }}
+          access-key-id: ${{ secrets.AWS_US_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.AWS_US_SECRET_ACCESS_KEY }}
+          session-token: ${{ secrets.AWS_US_SESSION_TOKEN }}
+
+      - name: Copy image and create US ECR manifests
+        run: |
+          for arch in amd64 arm64; do
+            docker buildx imagetools create \
+              --tag "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:${TAG}-${arch}" \
+              --tag "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:latest-${arch}" \
+              "calciumion/new-api:${TAG}-${arch}"
+          done
+          docker buildx imagetools create \
+            --tag "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:${TAG}" \
+            --tag "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:latest" \
+            "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:${TAG}-amd64" \
+            "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:${TAG}-arm64"
+
+  publish_cn_ecr:
+    name: Publish CN ECR image
+    needs: [build_single_arch]
+    if: inputs.region != 'us'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set version
+        run: echo "TAG=${{ needs.build_single_arch.outputs.tag }}" >> "$GITHUB_ENV"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to CN ECR
+        uses: ./.github/actions/ecr-login
+        with:
+          label: CN
+          registry: ${{ env.ECR_CN_REGISTRY }}
+          region: ${{ env.ECR_CN_REGION }}
+          repository: ${{ env.ECR_CN_REPOSITORY }}
+          access-key-id: ${{ secrets.AWS_CN_ACCESS_KEY_ID }}
+          secret-access-key: ${{ secrets.AWS_CN_SECRET_ACCESS_KEY }}
+          session-token: ${{ secrets.AWS_CN_SESSION_TOKEN }}
+
+      - name: Copy image and create CN ECR manifests
+        run: |
+          for arch in amd64 arm64; do
+            docker buildx imagetools create \
+              --tag "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:${TAG}-${arch}" \
+              --tag "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:latest-${arch}" \
+              "calciumion/new-api:${TAG}-${arch}"
+          done
+          docker buildx imagetools create \
+            --tag "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:${TAG}" \
+            --tag "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:latest" \
+            "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:${TAG}-amd64" \
+            "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:${TAG}-arm64"
