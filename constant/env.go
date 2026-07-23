@@ -17,7 +17,6 @@ var GenerateDefaultToken bool
 var ErrorLogEnabled bool
 var TaskQueryLimit int
 var TaskTimeoutMinutes int
-var TokenLimitExemptUserIds map[int]bool
 
 // temporary variable for sora patch, will be removed in future
 var TaskPricePatches []string
@@ -25,10 +24,3 @@ var TaskPricePatches []string
 // TrustedRedirectDomains is a list of trusted domains for redirect URL validation.
 // Domains support subdomain matching (e.g., "example.com" matches "sub.example.com").
 var TrustedRedirectDomains []string
-
-func IsTokenLimitExemptUser(userId int) bool {
-	if TokenLimitExemptUserIds == nil {
-		return false
-	}
-	return TokenLimitExemptUserIds[userId]
-}

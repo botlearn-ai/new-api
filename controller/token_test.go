@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
@@ -484,44 +483,6 @@ func TestAddTokenHonorsTokenLimitForRegularUsers(t *testing.T) {
 	}
 	if !strings.Contains(response.Message, "已达到最大令牌数量限制") {
 		t.Fatalf("expected token limit error, got %q", response.Message)
-	}
-}
-
-func TestAddTokenSkipsTokenLimitForExemptUsers(t *testing.T) {
-	db := setupTokenControllerTestDB(t)
-	seedToken(t, db, 1, "existing-token", "exempt1234token5678")
-
-	oldMaxTokens := operation_setting.GetTokenSetting().MaxUserTokens
-	operation_setting.GetTokenSetting().MaxUserTokens = 1
-	oldExemptUsers := constant.TokenLimitExemptUserIds
-	constant.TokenLimitExemptUserIds = map[int]bool{1: true}
-	t.Cleanup(func() {
-		operation_setting.GetTokenSetting().MaxUserTokens = oldMaxTokens
-		constant.TokenLimitExemptUserIds = oldExemptUsers
-	})
-
-	body := map[string]any{
-		"name":                 "service-token",
-		"expired_time":         -1,
-		"remain_quota":         100,
-		"unlimited_quota":      false,
-		"model_limits_enabled": false,
-	}
-
-	ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, 1)
-	AddToken(ctx)
-
-	response := decodeAPIResponse(t, recorder)
-	if !response.Success {
-		t.Fatalf("expected token creation to succeed for exempt user, got message: %s", response.Message)
-	}
-
-	var created tokenCreateResponse
-	if err := common.Unmarshal(response.Data, &created); err != nil {
-		t.Fatalf("failed to decode token create response: %v", err)
-	}
-	if created.Key == "" || created.APIKey != "sk-"+created.Key {
-		t.Fatalf("expected created token key and api_key to be returned, got %+v", created)
 	}
 }
 

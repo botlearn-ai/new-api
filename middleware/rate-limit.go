@@ -108,6 +108,45 @@ func CriticalRateLimit() func(c *gin.Context) {
 	return defNext
 }
 
+// IntegrationRateLimit limits authenticated third-party services by
+// integration ID rather than by a shared outbound IP address.
+func IntegrationRateLimit() func(c *gin.Context) {
+	if !common.GlobalApiRateLimitEnable {
+		return defNext
+	}
+	if common.RedisEnabled {
+		return func(c *gin.Context) {
+			integrationId := c.GetString(IntegrationIdContextKey)
+			if integrationId == "" {
+				c.Status(http.StatusUnauthorized)
+				c.Abort()
+				return
+			}
+			key := fmt.Sprintf("rateLimit:IN:integration:%s", integrationId)
+			userRedisRateLimiter(c, common.GlobalApiRateLimitNum, common.GlobalApiRateLimitDuration, key)
+		}
+	}
+	inMemoryRateLimiter.Init(common.RateLimitKeyExpirationDuration)
+	return func(c *gin.Context) {
+		integrationId := c.GetString(IntegrationIdContextKey)
+		if integrationId == "" {
+			c.Status(http.StatusUnauthorized)
+			c.Abort()
+			return
+		}
+		key := fmt.Sprintf("IN:integration:%s", integrationId)
+		if !inMemoryRateLimiter.Request(
+			key,
+			common.GlobalApiRateLimitNum,
+			common.GlobalApiRateLimitDuration,
+		) {
+			c.Status(http.StatusTooManyRequests)
+			c.Abort()
+			return
+		}
+	}
+}
+
 func DownloadRateLimit() func(c *gin.Context) {
 	return rateLimitFactory(common.DownloadRateLimitNum, common.DownloadRateLimitDuration, "DW")
 }

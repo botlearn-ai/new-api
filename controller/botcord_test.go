@@ -1,11 +1,13 @@
 package controller
 
 import (
-	"encoding/json"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 )
 
@@ -13,7 +15,12 @@ func setupBotcordControllerTestDB(t *testing.T) {
 	t.Helper()
 
 	db := openTokenControllerTestDB(t)
-	if err := db.AutoMigrate(&model.User{}, &model.Token{}); err != nil {
+	if err := db.AutoMigrate(
+		&model.User{},
+		&model.Token{},
+		&model.IntegrationAccount{},
+		&model.IntegrationOperation{},
+	); err != nil {
 		t.Fatalf("failed to migrate botcord controller test tables: %v", err)
 	}
 }
@@ -40,7 +47,7 @@ func decodeBotcordBalance(t *testing.T, recorder *httptest.ResponseRecorder) bot
 		t.Fatalf("expected successful response, got %s", response.Message)
 	}
 	var view botcordBalanceView
-	if err := json.Unmarshal(response.Data, &view); err != nil {
+	if err := common.Unmarshal(response.Data, &view); err != nil {
 		t.Fatalf("failed to decode botcord balance: %v", err)
 	}
 	return view
@@ -99,8 +106,11 @@ func TestBotcordProvisionIsIdempotent(t *testing.T) {
 	if first.Token.Id != second.Token.Id {
 		t.Fatalf("expected same token id, got %d and %d", first.Token.Id, second.Token.Id)
 	}
-	if first.Token.ApiKey == "" || first.Token.ApiKey != second.Token.ApiKey {
-		t.Fatalf("expected same returned API key, got %q and %q", first.Token.ApiKey, second.Token.ApiKey)
+	if first.Token.ApiKey == "" {
+		t.Fatal("expected API key on initial provision")
+	}
+	if second.Token.ApiKey != "" {
+		t.Fatalf("expected repeated provision not to reveal API key, got %q", second.Token.ApiKey)
 	}
 
 	var userCount int64
@@ -125,6 +135,76 @@ func TestBotcordProvisionIsIdempotent(t *testing.T) {
 	}
 	if user.Quota != botcordQuotaFromUsd(5) {
 		t.Fatalf("expected initial quota once, got %d", user.Quota)
+	}
+}
+
+func TestBotcordProvisionAdoptsLegacyAccount(t *testing.T) {
+	setupBotcordControllerTestDB(t)
+	t.Setenv("BOTCORD_INTERNAL_SECRET", "secret")
+
+	externalUserId := "legacy-user"
+	sum := sha256.Sum256([]byte(externalUserId))
+	user := model.User{
+		Username:    "bc_" + hex.EncodeToString(sum[:])[:16],
+		Password:    "unused-password-hash",
+		DisplayName: "Legacy User",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Quota:       botcordQuotaFromUsd(5),
+		AffCode:     "lgcy",
+	}
+	if err := model.DB.Create(&user).Error; err != nil {
+		t.Fatalf("failed to create legacy user: %v", err)
+	}
+	token := model.Token{
+		UserId:         user.Id,
+		Name:           "BotCord Cloud Agent",
+		Key:            "legacy-integration-key",
+		Status:         common.TokenStatusEnabled,
+		CreatedTime:    common.GetTimestamp(),
+		AccessedTime:   common.GetTimestamp(),
+		ExpiredTime:    -1,
+		RemainQuota:    botcordQuotaFromUsd(5),
+		UnlimitedQuota: false,
+	}
+	if err := model.DB.Create(&token).Error; err != nil {
+		t.Fatalf("failed to create legacy token: %v", err)
+	}
+
+	ctx, recorder := newAuthenticatedContext(
+		t,
+		http.MethodPost,
+		"/api/botcord/balance",
+		botcordUserRequest{ExternalUserId: externalUserId},
+		0,
+	)
+	ctx.Request.Header.Set("Authorization", "Bearer secret")
+	BotcordBalance(ctx)
+	balance := decodeBotcordBalance(t, recorder)
+	if balance.UserId != user.Id || balance.Token.Id != token.Id {
+		t.Fatalf(
+			"expected legacy balance account %d/%d, got %d/%d",
+			user.Id,
+			token.Id,
+			balance.UserId,
+			balance.Token.Id,
+		)
+	}
+
+	provisioned := postBotcordProvision(t, botcordUserRequest{
+		ExternalUserId: externalUserId,
+	})
+	if provisioned.UserId != user.Id || provisioned.Token.Id != token.Id {
+		t.Fatalf(
+			"expected legacy account %d/%d, got %d/%d",
+			user.Id,
+			token.Id,
+			provisioned.UserId,
+			provisioned.Token.Id,
+		)
+	}
+	if provisioned.Token.ApiKey != "" {
+		t.Fatalf("expected adopted account not to reveal existing key, got %q", provisioned.Token.ApiKey)
 	}
 }
 
@@ -187,6 +267,7 @@ func TestBotcordTopUpDoesNotProvisionMissingUser(t *testing.T) {
 		botcordTopUpRequest{
 			ExternalUserId: "missing-user",
 			AmountUsd:      1,
+			IdempotencyKey: "missing-user-topup",
 		},
 		0,
 	)
