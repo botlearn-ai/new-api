@@ -31,7 +31,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Configure credentials and log in
+    - name: Validate ECR configuration
       shell: bash
       env:
         ECR_LABEL: ${{ inputs.label }}
@@ -40,11 +40,14 @@ runs:
         ECR_REPOSITORY: ${{ inputs.repository }}
         CONFIGURED_AWS_ACCESS_KEY_ID: ${{ inputs.access-key-id }}
         CONFIGURED_AWS_SECRET_ACCESS_KEY: ${{ inputs.secret-access-key }}
-        CONFIGURED_AWS_SESSION_TOKEN: ${{ inputs.session-token }}
         ALLOW_AMBIENT_CREDENTIALS: ${{ inputs.allow-ambient-credentials }}
       run: |
         if [ -z "$ECR_REGISTRY" ]; then
           echo "::error::$ECR_LABEL ECR registry is not configured"
+          exit 1
+        fi
+        if [ -z "$ECR_REGION" ] || [ -z "$ECR_REPOSITORY" ]; then
+          echo "::error::$ECR_LABEL ECR region and repository are required"
           exit 1
         fi
         if [ "$ECR_LABEL" = "CN" ]; then
@@ -62,18 +65,34 @@ runs:
             echo "::error::$ECR_LABEL access key ID and secret access key must be configured together"
             exit 1
           fi
-          export AWS_ACCESS_KEY_ID="$CONFIGURED_AWS_ACCESS_KEY_ID"
-          export AWS_SECRET_ACCESS_KEY="$CONFIGURED_AWS_SECRET_ACCESS_KEY"
-          if [ -n "$CONFIGURED_AWS_SESSION_TOKEN" ]; then
-            export AWS_SESSION_TOKEN="$CONFIGURED_AWS_SESSION_TOKEN"
-          else
-            unset AWS_SESSION_TOKEN
-          fi
         elif [ "$ALLOW_AMBIENT_CREDENTIALS" != "true" ]; then
           echo "::error::$ECR_LABEL AWS access key secrets are required"
           exit 1
         fi
 
+    - name: Configure static AWS credentials
+      if: inputs.access-key-id != '' && inputs.secret-access-key != ''
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ inputs.access-key-id }}
+        aws-secret-access-key: ${{ inputs.secret-access-key }}
+        aws-session-token: ${{ inputs.session-token }}
+        aws-region: ${{ inputs.region }}
+        unset-current-credentials: true
+
+    - name: Use ambient AWS credentials
+      if: inputs.access-key-id == '' && inputs.secret-access-key == '' && inputs.allow-ambient-credentials == 'true'
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: ${{ inputs.region }}
+        use-existing-credentials: true
+
+    - name: Ensure ECR repository exists
+      shell: bash
+      env:
+        ECR_REGION: ${{ inputs.region }}
+        ECR_REPOSITORY: ${{ inputs.repository }}
+      run: |
         if ! describe_output=$(aws ecr describe-repositories \
           --region "$ECR_REGION" \
           --repository-names "$ECR_REPOSITORY" 2>&1); then
@@ -98,5 +117,17 @@ runs:
           esac
         fi
 
-        aws ecr get-login-password --region "$ECR_REGION" \
-          | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+    - name: Log in to Amazon ECR
+      id: ecr_login
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Verify ECR registry
+      shell: bash
+      env:
+        EXPECTED_ECR_REGISTRY: ${{ inputs.registry }}
+        AUTHENTICATED_ECR_REGISTRY: ${{ steps.ecr_login.outputs.registry }}
+      run: |
+        if [ "$AUTHENTICATED_ECR_REGISTRY" != "$EXPECTED_ECR_REGISTRY" ]; then
+          echo "::error::Authenticated ECR registry '$AUTHENTICATED_ECR_REGISTRY' does not match configured registry '$EXPECTED_ECR_REGISTRY'"
+          exit 1
+        fi
