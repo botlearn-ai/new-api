@@ -267,6 +267,23 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.POST("/upstream_updates/detect", controller.DetectChannelUpstreamModelUpdates)
 			channelRoute.POST("/upstream_updates/detect_all", controller.DetectAllChannelUpstreamModelUpdates)
 		}
+		integrationRoute := apiRouter.Group("/integrations")
+		integrationRoute.Use(middleware.IntegrationAuth(), middleware.IntegrationRateLimit())
+		{
+			integrationRoute.POST("/provision", controller.IntegrationProvision)
+			integrationRoute.POST("/balance", controller.IntegrationBalance)
+			integrationRoute.POST("/topup", controller.IntegrationTopUp)
+		}
+
+		// Deprecated compatibility routes for existing BotCord deployments.
+		// New third-party services should use /api/integrations/*.
+		botcordRoute := apiRouter.Group("/botcord")
+		botcordRoute.Use(middleware.CriticalRateLimit())
+		{
+			botcordRoute.POST("/provision", controller.BotcordProvision)
+			botcordRoute.POST("/balance", controller.BotcordBalance)
+			botcordRoute.POST("/topup", controller.BotcordTopUp)
+		}
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())
 		{
