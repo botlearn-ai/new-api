@@ -1,16 +1,8 @@
-name: Publish Docker image (Multi-arch)
+name: Publish Prod
 
 on:
-  push:
-    tags:
-      - '*'
-      - '!nightly*'
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Tag name to build (e.g., v0.10.8-alpha.3)'
-        required: true
-        type: string
       region:
         description: ECR region(s) to publish
         required: true
@@ -22,7 +14,7 @@ on:
           - cn
 
 env:
-  PUSH_REGION: ${{ inputs.region || 'both' }}
+  PUSH_REGION: ${{ inputs.region }}
   ECR_US_REGISTRY: ${{ vars.AWS_US_ECR_REGISTRY || '928112001319.dkr.ecr.us-east-1.amazonaws.com' }}
   ECR_US_REGION: ${{ vars.AWS_US_REGION || 'us-east-1' }}
   ECR_US_REPOSITORY: ${{ vars.AWS_US_ECR_REPOSITORY || 'botlearn/new-api' }}
@@ -30,154 +22,31 @@ env:
   ECR_CN_REGION: ${{ vars.AWS_CN_REGION || 'cn-northwest-1' }}
   ECR_CN_REPOSITORY: ${{ vars.AWS_CN_ECR_REPOSITORY || 'botlearn/new-api' }}
 
-jobs:
-  build_single_arch:
-    name: Build & push (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            platform: linux/amd64
-            runner: ubuntu-latest
-          - arch: arm64
-            platform: linux/arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    outputs:
-      tag: ${{ steps.version.outputs.tag }}
+concurrency:
+  group: publish-prod
+  cancel-in-progress: false
 
+jobs:
+  publish:
+    name: Build & Push Prod
+    runs-on: self-hosted
+    timeout-minutes: 45
     permissions:
-      packages: write
       contents: read
       id-token: write
 
     steps:
       - name: Check out
         uses: actions/checkout@v4
-        with:
-          fetch-depth: ${{ github.event_name == 'workflow_dispatch' && 0 || 1 }}
-          ref: ${{ github.event.inputs.tag || github.ref }}
 
-      - name: Resolve tag & write VERSION
-        id: version
-        run: |
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            TAG="${{ github.event.inputs.tag }}"
-            if ! git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
-              echo "::error::Tag '$TAG' does not exist"
-              exit 1
-            fi
-          else
-            TAG=${GITHUB_REF#refs/tags/}
-          fi
-          echo "TAG=${TAG}" >> $GITHUB_ENV
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "${TAG}" > VERSION
-          echo "Building tag: ${TAG} for ${{ matrix.arch }}"
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Extract metadata (labels)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: calciumion/new-api
-
-      - name: Build & push
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: ${{ matrix.platform }}
-          push: true
-          tags: |
-            calciumion/new-api:${{ env.TAG }}-${{ matrix.arch }}
-            calciumion/new-api:latest-${{ matrix.arch }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: mode=max
-          sbom: true
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
-
-      - name: Sign image with cosign
-        run: cosign sign --yes calciumion/new-api@${{ steps.build.outputs.digest }}
-
-      - name: Image summary
-        run: |
-          echo "### Docker Image Digest (${{ matrix.arch }})" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "calciumion/new-api:${TAG}-${{ matrix.arch }}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.build.outputs.digest }}" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-  create_manifests:
-    name: Create multi-arch manifests
-    needs: [build_single_arch]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-
-    steps:
-      - name: Set version
-        run: echo "TAG=${{ needs.build_single_arch.outputs.tag }}" >> $GITHUB_ENV
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Create & push manifest (version)
-        run: |
-          docker buildx imagetools create \
-            -t calciumion/new-api:${TAG} \
-            calciumion/new-api:${TAG}-amd64 \
-            calciumion/new-api:${TAG}-arm64
-
-      - name: Create & push manifest (latest)
-        run: |
-          docker buildx imagetools create \
-            -t calciumion/new-api:latest \
-            calciumion/new-api:latest-amd64 \
-            calciumion/new-api:latest-arm64
-
-      - name: Manifest summary
-        run: |
-          echo "### Multi-arch Manifest" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          docker buildx imagetools inspect calciumion/new-api:${TAG} >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-  publish_us_ecr:
-    name: Publish US ECR image
-    needs: [build_single_arch]
-    if: inputs.region != 'cn'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out
-        uses: actions/checkout@v4
-
-      - name: Set version
-        run: echo "TAG=${{ needs.build_single_arch.outputs.tag }}" >> "$GITHUB_ENV"
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Log in to US ECR
+        if: env.PUSH_REGION == 'us' || env.PUSH_REGION == 'both'
         uses: ./.github/actions/ecr-login
         with:
           label: US
@@ -187,41 +56,10 @@ jobs:
           access-key-id: ${{ secrets.AWS_US_ACCESS_KEY_ID }}
           secret-access-key: ${{ secrets.AWS_US_SECRET_ACCESS_KEY }}
           session-token: ${{ secrets.AWS_US_SESSION_TOKEN }}
-
-      - name: Copy image and create US ECR manifests
-        run: |
-          for arch in amd64 arm64; do
-            docker buildx imagetools create \
-              --tag "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:${TAG}-${arch}" \
-              --tag "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:latest-${arch}" \
-              "calciumion/new-api:${TAG}-${arch}"
-          done
-          docker buildx imagetools create \
-            --tag "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:${TAG}" \
-            --tag "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:latest" \
-            "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:${TAG}-amd64" \
-            "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:${TAG}-arm64"
-
-  publish_cn_ecr:
-    name: Publish CN ECR image
-    needs: [build_single_arch]
-    if: inputs.region != 'us'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out
-        uses: actions/checkout@v4
-
-      - name: Set version
-        run: echo "TAG=${{ needs.build_single_arch.outputs.tag }}" >> "$GITHUB_ENV"
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          allow-ambient-credentials: "true"
 
       - name: Log in to CN ECR
+        if: env.PUSH_REGION == 'cn' || env.PUSH_REGION == 'both'
         uses: ./.github/actions/ecr-login
         with:
           label: CN
@@ -232,16 +70,45 @@ jobs:
           secret-access-key: ${{ secrets.AWS_CN_SECRET_ACCESS_KEY }}
           session-token: ${{ secrets.AWS_CN_SESSION_TOKEN }}
 
-      - name: Copy image and create CN ECR manifests
+      - name: Build once and push prod
+        shell: bash
         run: |
-          for arch in amd64 arm64; do
-            docker buildx imagetools create \
-              --tag "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:${TAG}-${arch}" \
-              --tag "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:latest-${arch}" \
-              "calciumion/new-api:${TAG}-${arch}"
-          done
-          docker buildx imagetools create \
-            --tag "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:${TAG}" \
-            --tag "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:latest" \
-            "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:${TAG}-amd64" \
-            "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:${TAG}-arm64"
+          tags=()
+
+          if [ "$PUSH_REGION" = "us" ] || [ "$PUSH_REGION" = "both" ]; then
+            tags+=(--tag "$ECR_US_REGISTRY/$ECR_US_REPOSITORY:prod")
+          fi
+
+          if [ "$PUSH_REGION" = "cn" ] || [ "$PUSH_REGION" = "both" ]; then
+            tags+=(--tag "$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:prod")
+          fi
+
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --push \
+            --cache-from type=gha \
+            --cache-to type=gha,mode=max \
+            --provenance mode=max \
+            --sbom true \
+            "${tags[@]}" \
+            .
+
+      - name: Verify prod manifests
+        shell: bash
+        run: |
+          {
+            echo "## Prod image manifests"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$PUSH_REGION" = "us" ] || [ "$PUSH_REGION" = "both" ]; then
+            us_image="$ECR_US_REGISTRY/$ECR_US_REPOSITORY:prod"
+            docker buildx imagetools inspect "$us_image"
+            echo "- US: \`$us_image\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "$PUSH_REGION" = "cn" ] || [ "$PUSH_REGION" = "both" ]; then
+            cn_image="$ECR_CN_REGISTRY/$ECR_CN_REPOSITORY:prod"
+            docker buildx imagetools inspect "$cn_image"
+            echo "- CN: \`$cn_image\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
